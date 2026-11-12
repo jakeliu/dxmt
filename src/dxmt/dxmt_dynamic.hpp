@@ -1,7 +1,7 @@
 #pragma once
 #include "dxmt_buffer.hpp"
 #include "dxmt_texture.hpp"
-#include <queue>
+#include <deque>
 
 namespace dxmt {
 
@@ -45,7 +45,7 @@ public:
 private:
   Flags<BufferAllocationFlag> flags_;
   std::atomic<uint32_t> refcount_ = {0u};
-  std::queue<QueueEntry> fifo;
+  std::deque<QueueEntry> fifo;
   dxmt::mutex mutex_;
   Rc<BufferAllocation> name_;
   uint32_t name_suballocation_ = 0;
@@ -85,7 +85,7 @@ public:
 private:
   Flags<TextureAllocationFlag> flags_;
   std::atomic<uint32_t> refcount_ = {0u};
-  std::queue<QueueEntry> fifo;
+  std::deque<QueueEntry> fifo;
   dxmt::mutex mutex_;
   Rc<TextureAllocation> name_;
   bool owned_by_command_list_ = false;
