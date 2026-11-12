@@ -8,6 +8,7 @@
  * See <https://github.com/doitsujin/dxvk/blob/master/LICENSE>
  */
 
+#include <iomanip> // GCC 16: no longer included transitively
 #include <mutex>
 #include <unordered_set>
 
