@@ -56,6 +56,9 @@ jobs:
         run: |
           mkdir -p out/x86_64-windows
           cp build/src/d3d11/d3d11.dll build/src/dxgi/dxgi.dll out/x86_64-windows/
+          # strip debug info like the official release (meson install --strip); the builtin marker survives
+          x86_64-w64-mingw32-strip out/x86_64-windows/d3d11.dll out/x86_64-windows/dxgi.dll
+          ls -l out/x86_64-windows/
           for f in out/x86_64-windows/*.dll; do
             file "$f"
             LC_ALL=C grep -q -a "Wine builtin DLL" "$f" || { echo "no builtin marker: $f"; exit 1; }
