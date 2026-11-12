@@ -1,0 +1,70 @@
+# XoM low-memory build: only the Windows-side d3d11.dll + dxgi.dll (x86_64, Wine builtin).
+# No LLVM: with build_airconv_for_windows=false (default) d3d11.dll forwards shader conversion
+# to XoM's own winemetal.so, so only mingw-w64, Wine's prebuilt tools and Meson are needed.
+# Runs on three macOS runner types at once; any one that succeeds is enough (fetch-dxmt.sh).
+name: XoM d3d11 build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - 'xom-*'
+
+env:
+  WINE_URL: https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Install Wine tools
+        run: |
+          mkdir -p toolchains/wine
+          curl -fSL "$WINE_URL" -o wine.tar.gz
+          tar -xzf wine.tar.gz -C toolchains/wine
+          rm wine.tar.gz
+          ls toolchains/wine/bin/winebuild
+
+      - name: Install mingw-w64
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: mingw-w64
+
+      - name: Install Meson
+        run: pip3 install meson==1.10.0 ninja --break-system-packages
+
+      - name: Build d3d11 + dxgi only
+        run: |
+          # LLVM is only used by the native winemetal.so, which we don't build; Meson just needs the folders.
+          mkdir -p toolchains/llvm-darwin/include toolchains/llvm-darwin/lib toolchains/llvm/include toolchains/llvm/lib
+          meson setup --cross-file build-win64.txt -Denable_nvapi=false -Denable_nvngx=false \
+            -Dnative_llvm_path=toolchains/llvm-darwin -Dwine_install_path=toolchains/wine \
+            build --buildtype release
+          meson compile -C build postprocess_libd3d11 postprocess_libdxgi
+
+      - name: Collect and check
+        run: |
+          mkdir -p out/x86_64-windows
+          cp build/src/d3d11/d3d11.dll build/src/dxgi/dxgi.dll out/x86_64-windows/
+          for f in out/x86_64-windows/*.dll; do
+            file "$f"
+            LC_ALL=C grep -q -a "Wine builtin DLL" "$f" || { echo "no builtin marker: $f"; exit 1; }
+          done
+          git rev-parse HEAD > out/COMMIT.txt
+          shasum -a 256 out/x86_64-windows/*.dll | tee out/SHA256.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: xom-dlls-${{ matrix.os }}
+          path: out
