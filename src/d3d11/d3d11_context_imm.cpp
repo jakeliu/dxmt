@@ -122,7 +122,7 @@ public:
         allocation->useSuballocation(next_sub);
       });
     } else {
-      dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), 0, false);
+      dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id, &ctx_state.cmd_queue), 0, false);
       EmitST([allocation = dynamic->immediateName(),
               buffer = Rc(dynamic->buffer)](ArgumentEncodingContext &enc) mutable {
         allocation->useSuballocation(0);
@@ -211,7 +211,7 @@ public:
           stage.SRVs.set_dirty();
         }
 
-        dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
+        dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id, &ctx_state.cmd_queue), false);
         EmitST([allocation = dynamic->immediateName(),
               texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
           auto _ = texture->rename(forward_rc(allocation));

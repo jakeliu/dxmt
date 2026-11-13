@@ -11,7 +11,7 @@ namespace dxmt {
 
 constexpr size_t kStagingBlockSize = 0x800000; // 8MB (XoM low-memory patch; stock 32MB)
 constexpr size_t kStagingBlockSizeForDeferredContext = 0x200000; // 2MB
-constexpr size_t kStagingBlockLifetime = 300;
+constexpr size_t kStagingBlockLifetime = 120; // XoM low-memory patch v2; stock 300
 
 template <typename Allocator, size_t BlockSize = kStagingBlockSize, class mutex = dxmt::mutex> class RingBumpState {
 

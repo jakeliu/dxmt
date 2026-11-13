@@ -33,6 +33,75 @@ spareAgeLimit() {
 
 constexpr unsigned kMaxTrimPerCall = 4;
 
+/*
+ * Patch v2: idle sweep. trimSpare above only runs when the game maps a resource again, so a
+ * resource that got many copies in a burst and was then left alone kept them all. Every dynamic
+ * resource is on a global list; the queue's finishing thread walks it now and then.
+ *
+ * Sequence ids belong to one command queue. A resource records the queue it was last mapped
+ * through (queue_tag_) and is only trimmed by that queue, so two devices never mix their ids.
+ * A resource never mapped has no spare copies and no tag.
+ *
+ * Locks: list lock, then the resource's own lock (try only; a busy resource is skipped). The
+ * released copies are destroyed after both locks are dropped. A destructor takes the list lock
+ * to unlink, so a resource cannot go away while the sweep looks at it.
+ */
+uint64_t
+idleAgeLimit() {
+  static const uint64_t value = [] {
+    auto s = env::getEnvVar("DXMT_DYNAMIC_IDLE_AGE");
+    if (s.empty())
+      return uint64_t(600);
+    long long v = std::atoll(s.c_str());
+    return v > 0 ? uint64_t(v) : uint64_t(0);
+  }();
+  return value;
+}
+
+constexpr uint64_t kIdleSweepInterval = 128;
+
+template <typename T> struct IdleList {
+  dxmt::mutex mutex;
+  T *head = nullptr;
+
+  void
+  link(T *obj) {
+    std::lock_guard<dxmt::mutex> lock(mutex);
+    obj->idle_prev_ = nullptr;
+    obj->idle_next_ = head;
+    if (head)
+      head->idle_prev_ = obj;
+    head = obj;
+  }
+
+  void
+  unlink(T *obj) {
+    std::lock_guard<dxmt::mutex> lock(mutex);
+    if (obj->idle_prev_)
+      obj->idle_prev_->idle_next_ = obj->idle_next_;
+    else
+      head = obj->idle_next_;
+    if (obj->idle_next_)
+      obj->idle_next_->idle_prev_ = obj->idle_prev_;
+    obj->idle_prev_ = obj->idle_next_ = nullptr;
+  }
+};
+
+IdleList<DynamicBuffer> g_idle_buffers;
+IdleList<DynamicLinearTexture> g_idle_textures;
+
+template <typename Fifo, typename Out>
+void
+collectIdle(Fifo &fifo, uint64_t coherent_seq_id, uint64_t limit, Out &out) {
+  while (!fifo.empty()) {
+    auto &front = fifo.front();
+    if (front.will_free_at > coherent_seq_id || coherent_seq_id - front.will_free_at <= limit)
+      break;
+    out.push_back(std::move(front.allocation));
+    fifo.pop_front();
+  }
+}
+
 template <typename Fifo>
 void
 trimSpare(Fifo &fifo, uint64_t coherent_seq_id) {
@@ -52,7 +121,24 @@ trimSpare(Fifo &fifo, uint64_t coherent_seq_id) {
 DynamicBuffer::DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags) :
     buffer(buffer),
     flags_(flags),
-    name_(buffer->current()) {}
+    name_(buffer->current()) {
+  g_idle_buffers.link(this);
+}
+
+DynamicBuffer::~DynamicBuffer() {
+  g_idle_buffers.unlink(this);
+}
+
+void
+DynamicBuffer::trimIdle(
+    const void *queue_tag, uint64_t coherent_seq_id, uint64_t limit, std::vector<Rc<BufferAllocation>> &out
+) {
+  if (!mutex_.try_lock())
+    return;
+  if (queue_tag_ == queue_tag)
+    collectIdle(fifo, coherent_seq_id, limit, out);
+  mutex_.unlock();
+}
 
 void
 DynamicBuffer::incRef() {
@@ -66,8 +152,9 @@ DynamicBuffer::decRef() {
 };
 
 Rc<BufferAllocation>
-DynamicBuffer::allocate(uint64_t coherent_seq_id) {
+DynamicBuffer::allocate(uint64_t coherent_seq_id, const void *queue_tag) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
+  queue_tag_ = queue_tag;
   Rc<BufferAllocation> ret;
   for (;;) {
     if (fifo.empty()) {
@@ -121,7 +208,24 @@ DynamicBuffer::nextSuballocation() {
 DynamicLinearTexture::DynamicLinearTexture(Texture *texture, Flags<TextureAllocationFlag> flags) :
     texture(texture),
     flags_(flags),
-    name_(texture->current()) {}
+    name_(texture->current()) {
+  g_idle_textures.link(this);
+}
+
+DynamicLinearTexture::~DynamicLinearTexture() {
+  g_idle_textures.unlink(this);
+}
+
+void
+DynamicLinearTexture::trimIdle(
+    const void *queue_tag, uint64_t coherent_seq_id, uint64_t limit, std::vector<Rc<TextureAllocation>> &out
+) {
+  if (!mutex_.try_lock())
+    return;
+  if (queue_tag_ == queue_tag)
+    collectIdle(fifo, coherent_seq_id, limit, out);
+  mutex_.unlock();
+}
 
 void
 DynamicLinearTexture::incRef() {
@@ -135,8 +239,9 @@ DynamicLinearTexture::decRef() {
 };
 
 Rc<TextureAllocation>
-DynamicLinearTexture::allocate(uint64_t coherent_seq_id) {
+DynamicLinearTexture::allocate(uint64_t coherent_seq_id, const void *queue_tag) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
+  queue_tag_ = queue_tag;
   Rc<TextureAllocation> ret;
   for (;;) {
     if (fifo.empty()) {
@@ -176,6 +281,26 @@ DynamicLinearTexture::recycle(uint64_t current_seq_id, Rc<TextureAllocation> &&a
     }
   }
   fifo.push_back(QueueEntry{.allocation = std::move(allocation), .will_free_at = current_seq_id});
+}
+
+void
+TrimIdleDynamicResources(const void *queue_tag, uint64_t coherent_seq_id) {
+  uint64_t limit = idleAgeLimit();
+  if (!limit || (coherent_seq_id % kIdleSweepInterval) != 0)
+    return;
+  std::vector<Rc<BufferAllocation>> buffers;
+  std::vector<Rc<TextureAllocation>> textures;
+  {
+    std::lock_guard<dxmt::mutex> lock(g_idle_buffers.mutex);
+    for (auto obj = g_idle_buffers.head; obj; obj = obj->idle_next_)
+      obj->trimIdle(queue_tag, coherent_seq_id, limit, buffers);
+  }
+  {
+    std::lock_guard<dxmt::mutex> lock(g_idle_textures.mutex);
+    for (auto obj = g_idle_textures.head; obj; obj = obj->idle_next_)
+      obj->trimIdle(queue_tag, coherent_seq_id, limit, textures);
+  }
+  // `buffers` and `textures` release the copies here, with no lock held
 }
 
 } // namespace dxmt

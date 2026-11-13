@@ -1,4 +1,5 @@
 #include "dxmt_command_queue.hpp"
+#include "dxmt_dynamic.hpp"
 #include "Metal.hpp"
 #include "dxmt_statistics.hpp"
 #include "util_env.hpp"
@@ -197,6 +198,7 @@ CommandQueue::WaitForFinishThread() {
     staging_allocator.free_blocks(internal_seq);
     copy_temp_allocator.free_blocks(internal_seq);
     argbuf_allocator.free_blocks(internal_seq);
+    TrimIdleDynamicResources(this, internal_seq); // XoM low-memory patch v2
 
     internal_seq++;
   }

@@ -122,7 +122,7 @@ public:
         return allocation->mappedMemory(suballocation);
       }
     }
-    Rc<BufferAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+    Rc<BufferAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId(), &ctx_state.cmd_queue);
     uint32_t id = ctx_state.current_cmdlist->used_dynamic_buffers.size();
     // track the current allocation in case of a following NO_OVERWRITE map
     if (ret == ctx_state.current_dynamic_buffer_allocations.end()) {
@@ -204,7 +204,7 @@ public:
         for (auto &stage : state_.ShaderStages) {
             stage.SRVs.set_dirty();
         }
-        Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+        Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId(), &ctx_state.cmd_queue);
         uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
         // track the current allocation in case of a following NO_OVERWRITE map
         auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
